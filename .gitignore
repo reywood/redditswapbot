@@ -1,3 +1,6 @@
+.cache
+.pytest_cache
+__pycache__
 config.cfg
 *.log
 *.pyc

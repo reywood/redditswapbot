@@ -1,70 +1,94 @@
 #!/usr/bin/env python2
 
-import sys, os
-from ConfigParser import SafeConfigParser
 import praw
 import re
-from datetime import datetime, timedelta
-from time import sleep, time
+import config
+
 from log_conf import LoggerManager
 
-# load config file
-containing_dir = os.path.abspath(os.path.dirname(sys.argv[0]))
-cfg_file = SafeConfigParser()
-path_to_cfg = os.path.join(containing_dir, 'config.cfg')
-cfg_file.read(path_to_cfg)
-username = cfg_file.get('reddit', 'username')
-password = cfg_file.get('reddit', 'password')
-app_key = cfg_file.get('reddit', 'app_key')
-app_secret = cfg_file.get('reddit', 'app_secret')
-subreddit = cfg_file.get('reddit', 'subreddit')
-link_id = cfg_file.get('heatware', 'link_id')
-reply = cfg_file.get('heatware', 'reply')
-regex = cfg_file.get('heatware', 'regex')
+logger = None
 
-# Configure logging
-logger = LoggerManager().getLogger(__name__)
 
 def main():
     try:
-        logger.debug('Logging in as /u/' + username)
-        r = praw.Reddit(client_id=app_key,
-                        client_secret=app_secret,
-                        username=username,
-                        password=password,
-                        user_agent=username)
+        reddit_api = login_to_reddit_api()
 
-        # Get the submission and the comments
-        submission = r.submission(id=link_id)
-        submission.comments.replace_more(limit=None, threshold=0)
-        flat_comments = submission.comments.list()
-
-        for comment in flat_comments:
-            logger.debug("Processing comment: " + comment.id)
-            if not hasattr(comment, 'author'):
-                continue
-            if comment.is_root is True:
-                heatware = re.search(regex, comment.body)
-                if heatware:
-                    url = heatware.group(0)
-                    if not comment.author_flair_text:
-                        replies_flat = comment.replies.list()
-                        for reply in replies_flat:
-                            if reply.author:
-                                if str(reply.author.name) == username:
-                                    break
-                        else:
-                            if comment.author:
-                                if comment.author_flair_css_class:
-                                    r.subreddit(subreddit).flair.set(comment.author, url, comment.author_flair_css_class)
-                                else:
-                                    r.subreddit(subreddit).flair.set(comment.author, url, '')
-                                logger.info('Set ' + comment.author.name + '\'s heatware to ' + url)
-                                if reply:
-                                    comment.reply(reply)
+        for comment in get_heatware_submission_root_comments(reddit_api):
+            add_flair_to_comment_author(reddit_api, comment)
 
     except Exception as e:
         logger.error(e)
+        raise
+
+
+def login_to_reddit_api():
+    logger.debug('Logging in as /u/' + config.reddit.username)
+    return praw.Reddit(client_id=config.reddit.app_key,
+                       client_secret=config.reddit.app_secret,
+                       username=config.reddit.username,
+                       password=config.reddit.password,
+                       user_agent=config.reddit.username)
+
+
+def get_heatware_submission_root_comments(reddit_api):
+    submission = reddit_api.submission(id=config.heatware.link_id)
+    submission.comments.replace_more(limit=None, threshold=0)
+    return (comment
+            for comment in submission.comments.list()
+            if comment.is_root)
+
+
+def add_flair_to_comment_author(reddit_api, comment):
+    logger.debug("Processing comment: " + comment.id)
+
+    if should_not_add_flair_to_author(comment):
+        return
+
+    heatware_url = extract_heatware_url_from(comment)
+
+    if heatware_url and bot_has_not_already_replied_to(comment):
+        set_author_flair(reddit_api, comment, heatware_url)
+        reply_to(comment)
+
+
+def should_not_add_flair_to_author(comment):
+    author_attr_not_present = not hasattr(comment, 'author')
+    author_attr_is_empty = hasattr(comment, 'author') and not comment.author
+    author_already_has_flair = bool(comment.author_flair_text)
+    return (author_attr_not_present or
+            author_attr_is_empty or
+            author_already_has_flair)
+
+
+def extract_heatware_url_from(comment):
+    match = re.search(config.heatware.regex, comment.body)
+    if match:
+        return match.group(0)
+
+
+def bot_has_not_already_replied_to(comment):
+    for reply in comment.replies.list():
+        if reply.author and str(reply.author.name) == config.reddit.username:
+            return False
+
+    return True
+
+
+def set_author_flair(reddit_api, comment, heatware_url):
+    author_flair_css_class = comment.author_flair_css_class or ''
+    subreddit = reddit_api.subreddit(config.reddit.subreddit)
+    subreddit.flair.set(comment.author,
+                        heatware_url,
+                        author_flair_css_class)
+
+    logger.info('Set ' + comment.author.name + '\'s heatware to ' + heatware_url)
+
+
+def reply_to(comment):
+    if config.heatware.reply:
+        comment.reply(config.heatware.reply)
+
 
 if __name__ == '__main__':
+    logger = LoggerManager().getLogger(__name__)
     main()

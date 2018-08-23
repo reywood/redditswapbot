@@ -1,0 +1,6 @@
+MySQL-python
+praw
+
+# test requirements
+mock
+pytest
